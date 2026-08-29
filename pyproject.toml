@@ -1,0 +1,19 @@
+[project]
+name = "clavicula"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+
+dependencies = [
+    "arcade>=3.3.3",
+    "pyright>=1.1.411",
+    "ruff>=0.16.5",
+]
+
+[project.scripts]
+clavicula = "clavicula.game:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
