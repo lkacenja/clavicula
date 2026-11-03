@@ -3,10 +3,11 @@ from clavicula.data.grid import TileType, TypedGrid
 
 GLYPH_TO_TILE: dict[str, TileType] = {
     ".": TileType.EMPTY,
-    "#": TileType.IMMUTABLE,          # solid wall, never changes
+    "#": TileType.IMMUTABLE,  # solid wall, never changes
     "=": TileType.MUTABLE_PERMANENT,  # player-creatable, stays
-    "~": TileType.MUTABLE_DECAY,      # player-creatable, decays
+    "~": TileType.MUTABLE_DECAY,  # player-creatable, decays
 }
+
 
 def load_ascii(path: str, grid: TypedGrid[TileType]) -> None:
     rows, cols = grid.shape
@@ -21,4 +22,6 @@ def load_ascii(path: str, grid: TypedGrid[TileType]) -> None:
             try:
                 grid[r, c] = GLYPH_TO_TILE[ch]
             except KeyError:
-                raise ValueError(f"{path}: unknown glyph {ch!r} at line {len(lines) - r}, col {c + 1}")
+                raise ValueError(
+                    f"{path}: unknown glyph {ch!r} at line {len(lines) - r}, col {c + 1}"
+                )

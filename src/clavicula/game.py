@@ -5,230 +5,25 @@ python -m arcade.examples.platform_tutorial.01_open_window
 """
 
 import math
-from typing import Dict, Tuple
 
 import arcade
-from arcade.future.light.light_demo_perf import SCREEN_WIDTH, SCREEN_HEIGHT
+from arcade.future.light.light_demo_perf import SCREEN_WIDTH
 
-from clavicula.data.grid import TypedGrid, MutationEvent, TileType
-from clavicula.data.ascii_loader import load_ascii
 from pyglet.gl import GL_NEAREST
-from arcade.gl import geometry
 
-# Constants
-WINDOW_WIDTH = 1280
-WINDOW_HEIGHT = 720
-WINDOW_TITLE = "Clavicula"
-CHARACTER_SCALE = 1
-CAMERA_ZOOM = 2
-TILE_SIZE = 16
-TILESET_PATH: str = "./src/clavicula/assets/tiles.png"
-CHAR_SPRITE_PATH: str = "./src/clavicula/assets/cla-char-sized.png"
-
-TILESET_COLUMNS = 5
-
-TILE_INDEX: Dict[TileType, int] = {
-    TileType.EMPTY: 0,
-    TileType.MUTABLE_PERMANENT: 1,
-    TileType.MUTABLE_DECAY: 2,
-    TileType.IMMUTABLE: 4,
-}
-
-_sheet = arcade.SpriteSheet(TILESET_PATH)
-_tile_textures = _sheet.get_texture_grid(
-    size=(TILE_SIZE, TILE_SIZE),
-    columns=TILESET_COLUMNS,
-    count=max(TILE_INDEX.values()) + 1,
+from clavicula.data.grid import TileType
+from clavicula.data.ascii_loader import load_ascii
+from clavicula.sprites.player import PlayerSprite
+from clavicula.util.grid_renderer import GridRenderer
+from clavicula.constants import (
+    WINDOW_WIDTH,
+    WINDOW_HEIGHT,
+    WINDOW_TITLE,
+    CHAR_SPRITE_PATH,
+    CHARACTER_SCALE,
+    CAMERA_ZOOM,
+    TILE_SIZE,
 )
-
-_TEXTURE_BY_TYPE: Dict[TileType, arcade.Texture] = {
-    tile_type: _tile_textures[index] for tile_type, index in TILE_INDEX.items()
-}
-
-
-class GridRenderer:
-    def __init__(self):
-        self.rows = math.ceil(WINDOW_HEIGHT / TILE_SIZE)
-        self.cols = math.ceil(WINDOW_WIDTH / TILE_SIZE)
-        self.grid: TypedGrid[TileType] = TypedGrid(
-            self.rows, self.cols, default=TileType.EMPTY, dtype=TileType
-        )
-        self.sprite_list = arcade.SpriteList()
-        self._sprites: Dict[Tuple[int, int], arcade.Sprite] = {}
-
-        for r in range(self.rows):
-            for c in range(self.cols):
-                sprite = arcade.Sprite()
-                self._apply_type(sprite, self.grid[r, c])
-                sprite.center_x = c * TILE_SIZE + TILE_SIZE / 2
-                sprite.center_y = r * TILE_SIZE + TILE_SIZE / 2
-                self.sprite_list.append(sprite)
-                self._sprites[(r, c)] = sprite
-
-        self.grid.subscribe(self._on_mutation)
-
-    def _apply_type(self, sprite: arcade.Sprite, tile_type: TileType) -> None:
-        if tile_type is TileType.EMPTY:
-            sprite.visible = False
-            return
-        sprite.texture = _TEXTURE_BY_TYPE[tile_type]
-        sprite.visible = True
-
-    def _on_mutation(self, event: MutationEvent[TileType]) -> None:
-        self._apply_type(self._sprites[(event.row, event.col)], event.new)
-
-    def draw(self) -> None:
-        self.sprite_list.draw()
-
-
-class PlayerSprite(arcade.Sprite):
-    FRAME_W = 16
-    FRAME_H = 32
-    IDLE_COUNT = 3
-    RUN_COUNT = 8
-    IDLE_FRAME_TIME = 0.75  # seconds per idle frame
-    RUN_FRAME_TIME = 0.2   # seconds per run frame
-
-
-    def __init__(self, sheet_path, scale=1.0):
-        total = self.IDLE_COUNT + self.RUN_COUNT
-        sheet = arcade.load_spritesheet(sheet_path)
-        frames = sheet.get_texture_grid(
-            size=(self.FRAME_W, self.FRAME_H),
-            columns=total,
-            count=total,
-        )
-
-        idle_right = frames[:self.IDLE_COUNT]
-        run_right = frames[self.IDLE_COUNT:]
-
-        # Sheet is drawn facing right; mirror once up front, not per frame.
-        self._idle = {
-            True: idle_right,
-            False: [t.flip_left_right() for t in idle_right],
-        }
-        self._run = {
-            True: run_right,
-            False: [t.flip_left_right() for t in run_right],
-        }
-
-        super().__init__(idle_right[0], scale=scale)
-
-        self.facing_right = True
-        self._moving = False
-        self._anim_time = 0.0
-
-        self.vel_y = 0.0
-        self.on_ground = False
-
-    def update_animation(self, delta_time: float = 1 / 60):
-        if self.change_x > 0:
-            self.facing_right = True
-        elif self.change_x < 0:
-            self.facing_right = False
-
-        moving = self.change_x != 0 and self.on_ground  # airborne -> idle frames
-        if moving != self._moving:
-            self._moving = moving
-            self._anim_time = 0.0  # restart cycle on state change
-        self._anim_time += delta_time
-
-        if moving:
-            frames, frame_time = self._run[self.facing_right], self.RUN_FRAME_TIME
-        else:
-            frames, frame_time = self._idle[self.facing_right], self.IDLE_FRAME_TIME
-
-        self.texture = frames[int(self._anim_time / frame_time) % len(frames)]
-
-class LanternLighting:
-    LIGHT_COLOR = (0x59 / 255, 0x94 / 255, 0x3B / 255)  # #59943b
-    RADIUS = 800.0     # light reaches nothing beyond this distance (px)
-    INTENSITY = 3
-    HEIGHT = 100.0     # how far the lantern sits "in front of" the screen; lower = more side-on
-    AMBIENT = 0.7      # player brightness with no light
-
-    VERTEX = """
-    #version 330
-    in vec2 in_vert;
-    in vec2 in_uv;
-    out vec2 uv;
-    void main() {
-        gl_Position = vec4(in_vert, 0.0, 1.0);
-        uv = in_uv;
-    }
-    """
-
-    FRAGMENT = """
-    #version 330
-    uniform sampler2D u_scene;
-    uniform vec2 u_resolution;
-    uniform vec2 u_light_pos;
-    uniform vec3 u_light_color;
-    uniform vec2 u_center;
-    uniform vec2 u_half_size;
-    uniform float u_radius;
-    uniform float u_intensity;
-    uniform float u_height;
-    uniform float u_ambient;
-    in vec2 uv;
-    out vec4 frag_color;
-
-    void main() {
-        vec4 base = texture(u_scene, uv);
-        if (base.a < 0.01) {
-            frag_color = vec4(0.0);
-            return;
-        }
-
-        vec2 frag = uv * u_resolution;
-
-        // Fake normal: treat the sprite as an ellipsoid bulging toward the viewer.
-        vec2 rel = (frag - u_center) / u_half_size;
-        float nz = sqrt(max(0.0, 1.0 - dot(rel, rel)));
-        vec3 n = normalize(vec3(rel, max(nz, 0.2)));
-
-        vec3 to_light = vec3(u_light_pos - frag, u_height);
-        vec3 L = normalize(to_light);
-        float dist = length(to_light.xy);
-
-        float atten = pow(clamp(1.0 - dist / u_radius, 0.0, 1.0), 2.0);
-        float diffuse = max(dot(n, L), 0.0);
-
-        vec3 lit = base.rgb * u_ambient
-                 + base.rgb * u_light_color * diffuse * atten * u_intensity;
-        frag_color = vec4(lit, base.a);
-    }
-    """
-
-    def __init__(self, window):
-        ctx = window.ctx
-        self._window = window
-        self._tex = ctx.texture(window.get_framebuffer_size(), components=4)
-        self._tex.filter = ctx.NEAREST, ctx.NEAREST
-        self._fbo = ctx.framebuffer(color_attachments=[self._tex])
-        self._quad = geometry.quad_2d_fs()
-        self._program = ctx.program(
-            vertex_shader=self.VERTEX, fragment_shader=self.FRAGMENT
-        )
-
-    def draw(self, player_list, player, lantern_pos):
-        with self._fbo.activate():
-            self._fbo.clear(color=(0, 0, 0, 0))
-            player_list.draw(filter=GL_NEAREST)
-
-        self._tex.use(0)
-        p = self._program
-        p["u_scene"] = 0
-        p["u_resolution"] = self._window.get_size()
-        p["u_light_pos"] = lantern_pos
-        p["u_light_color"] = self.LIGHT_COLOR
-        p["u_center"] = player.position
-        p["u_half_size"] = (player.width / 2, player.height / 2)
-        p["u_radius"] = self.RADIUS
-        p["u_intensity"] = self.INTENSITY
-        p["u_height"] = self.HEIGHT
-        p["u_ambient"] = self.AMBIENT
-        self._quad.render(p)
 
 class GameView(arcade.Window):
     SPAWN_DELAY = 0.25
@@ -248,7 +43,7 @@ class GameView(arcade.Window):
 
         # Call the parent class to set up the window
         super().__init__(WINDOW_WIDTH, WINDOW_HEIGHT, WINDOW_TITLE)
-        #self.set_draw_rate(2)
+        # self.set_draw_rate(2)
 
         self.background_color = arcade.csscolor.BLACK
 
@@ -261,11 +56,10 @@ class GameView(arcade.Window):
         self.camera = arcade.Camera2D()
         self.camera.zoom = CAMERA_ZOOM
 
-        #self.lighting = LanternLighting(self)
+        # self.shaders = LanternLighting(self)
         self.space_held = False
         self.spawn_timer = 0.0
         self.spawned_this_hold = 0
-
 
     def setup(self):
         """Set up the game here. Call this function to restart the game."""
@@ -273,7 +67,7 @@ class GameView(arcade.Window):
         self.player.center_y = (1 + 1) * TILE_SIZE + self.player.height / 2
         self.player_list = arcade.SpriteList()
         self.player_list.append(self.player)
-        #self.lantern_pos = (self.player.center_x + 400, self.player.center_y)
+        # self.lantern_pos = (self.player.center_x + 400, self.player.center_y)
 
         load_ascii("./src/clavicula/maps/map-default.txt", self.grid_renderer.grid)
 
@@ -301,7 +95,9 @@ class GameView(arcade.Window):
         while row < g.rows and g.grid[row, col] is TileType.MUTABLE_DECAY:
             row += 1
 
-        if row - foot_row >= self.MAX_REACH:  # out of reach: stack is already as high as we can place
+        if (
+            row - foot_row >= self.MAX_REACH
+        ):  # out of reach: stack is already as high as we can place
             return None
         if not 1 <= row < g.rows:
             return None
@@ -365,7 +161,9 @@ class GameView(arcade.Window):
             low_row = math.ceil(new_feet / TILE_SIZE) - 1
             for row in range(top_row, low_row - 1, -1):
                 if self._any_solid(row):
-                    p.center_y = (row + 1) * TILE_SIZE + half  # feet on the tile's top edge
+                    p.center_y = (
+                        row + 1
+                    ) * TILE_SIZE + half  # feet on the tile's top edge
                     p.vel_y = 0.0
                     p.on_ground = True
                     return
@@ -376,7 +174,9 @@ class GameView(arcade.Window):
             top_row = math.floor(new_head / TILE_SIZE)
             for row in range(low_row, top_row + 1):
                 if self._any_solid(row):
-                    p.center_y = row * TILE_SIZE - half  # head against the tile's underside
+                    p.center_y = (
+                        row * TILE_SIZE - half
+                    )  # head against the tile's underside
                     p.vel_y = 0.0
                     return
 
@@ -400,7 +200,9 @@ class GameView(arcade.Window):
         else:
             col = math.floor((p.center_x - half_w) / TILE_SIZE)
             if any(self._is_solid(r, col) for r in rows):
-                p.center_x = (col + 1) * TILE_SIZE + half_w  # flush with the tile's right side
+                p.center_x = (
+                    col + 1
+                ) * TILE_SIZE + half_w  # flush with the tile's right side
 
     def on_key_press(self, key, modifiers):
         if key == arcade.key.LEFT:
@@ -418,7 +220,7 @@ class GameView(arcade.Window):
         if key in (arcade.key.LEFT, arcade.key.RIGHT):
             self.player.change_x = 0
         elif key == arcade.key.SPACE:
-            self._cancel_hold()# whole native pixels avoid shimmer
+            self._cancel_hold()  # whole native pixels avoid shimmer
 
     def update_camera(self):
         g = self.grid_renderer
