@@ -5,6 +5,7 @@ python -m arcade.examples.platform_tutorial.01_open_window
 """
 
 import math
+import random
 
 import arcade
 from arcade.future.light.light_demo_perf import SCREEN_WIDTH
@@ -14,7 +15,8 @@ from pyglet.gl import GL_NEAREST
 from clavicula.data.grid import TileType
 from clavicula.data.ascii_loader import load_ascii
 from clavicula.sprites.player import PlayerSprite
-from clavicula.util.grid_renderer import GridRenderer
+from clavicula.util.grid_renderer import GridRenderer, CHARGE_ANIMS
+from clavicula.shaders.charge_particles import ChargeParticles
 from clavicula.constants import (
     WINDOW_WIDTH,
     WINDOW_HEIGHT,
@@ -23,13 +25,16 @@ from clavicula.constants import (
     CHARACTER_SCALE,
     CAMERA_ZOOM,
     TILE_SIZE,
+    SPAWN_DELAY,
+    MAX_REACH,
+    MAX_SPAWNS_PER_HOLD,
+    EPS
 )
 
 class GameView(arcade.Window):
     SPAWN_DELAY = 0.25
     MAX_SPAWNS_PER_HOLD = 2
     MAX_REACH = 2
-    MUTABLE = (TileType.MUTABLE_PERMANENT, TileType.MUTABLE_DECAY)
     GRAVITY = 0.25  # px/frame²
     JUMP_SPEED = 5.0  # px/frame (about 3 tiles of height)
     MAX_FALL_SPEED = 8.0
@@ -60,6 +65,15 @@ class GameView(arcade.Window):
         self.space_held = False
         self.spawn_timer = 0.0
         self.spawned_this_hold = 0
+        self.charge_variant = None
+
+        self.charge_sprite = arcade.Sprite(CHARGE_ANIMS[0][0])
+        self.charge_sprite.visible = False
+        self.charge_list = arcade.SpriteList()
+        self.charge_list.append(self.charge_sprite)
+
+        self.particles = ChargeParticles(self)
+        self.charge_emitter = None
 
     def setup(self):
         """Set up the game here. Call this function to restart the game."""
@@ -92,7 +106,7 @@ class GameView(arcade.Window):
 
         # Climb the existing stack of decay tiles in this column.
         row = foot_row
-        while row < g.rows and g.grid[row, col] is TileType.MUTABLE_DECAY:
+        while row < g.rows and g.grid[row, col] is TileType.MUTABLE:
             row += 1
 
         if (
@@ -103,30 +117,81 @@ class GameView(arcade.Window):
             return None
         if g.grid[row, col] is not TileType.EMPTY:
             return None
-        if g.grid[row - 1, col] not in self.MUTABLE:
+        if g.grid[row - 1, col] is not TileType.MUTABLE:
             return None
         return row, col
 
+    def _spawn_target(self):
+        p = self.player
+        g = self.grid_renderer
+
+        foot_row = int((p.center_y - p.height / 2 + EPS) // TILE_SIZE)
+        if p.facing_right:
+            col = int((p.center_x + p.width / 2 - 1e-6) // TILE_SIZE) + 1
+        else:
+            col = int((p.center_x - p.width / 2) // TILE_SIZE) - 1
+
+        if not 0 <= col < g.cols:
+            return None
+
+        row = foot_row
+        while row < g.rows and g.grid[row, col] is TileType.MUTABLE:
+            row += 1  # climb the existing stack
+
+        if row - foot_row >= MAX_REACH:  # out of reach
+            return None
+        if not 1 <= row < g.rows:
+            return None
+        if g.grid[row, col] is not TileType.EMPTY:
+            return None
+        if g.grid[row - 1, col] is not TileType.MUTABLE:  # needs mutable support
+            return None
+        return row, col
+
+    def _stop_charge(self, keep_emitter=False):
+        self.spawn_timer = 0.0
+        self.charge_variant = None
+        self.charge_sprite.visible = False
+        if not keep_emitter and self.charge_emitter is not None:
+            self.particles.end(self.charge_emitter)
+            self.charge_emitter = None
+
+    def _cancel_hold(self):
+        self.space_held = False
+        self.spawned_this_hold = 0
+        self._stop_charge()
+
     def maybe_spawn_tiles(self, delta_time):
-        # Moving cancels the hold; press space again to restart.
-        if self.player.change_x != 0:
+        if self.player.change_x != 0:  # moving cancels the hold
             self._cancel_hold()
             return
-        if not self.space_held or self.spawned_this_hold >= self.MAX_SPAWNS_PER_HOLD:
-            self.spawn_timer = 0.0
+        if not self.space_held or self.spawned_this_hold >= MAX_SPAWNS_PER_HOLD:
+            self._stop_charge()
             return
 
         target = self._spawn_target()
         if target is None:
-            self.spawn_timer = 0.0  # pause only counts while placement is valid
+            self._stop_charge()
             return
 
+        row, col = target
+        if self.charge_variant is None:
+            self.charge_variant = random.randrange(len(CHARGE_ANIMS))
+        if self.charge_emitter is None:  # first tile of the hold; the second reuses it
+            self.charge_emitter = self.particles.begin(target, random.random() * 100.0)
         self.spawn_timer += delta_time
-        if self.spawn_timer >= self.SPAWN_DELAY:
-            row, col = target
-            self.grid_renderer.grid[row, col] = TileType.MUTABLE_DECAY
+
+        if self.spawn_timer >= SPAWN_DELAY:
+            self.grid_renderer.set_mutable(row, col, self.charge_variant)
             self.spawned_this_hold += 1
-            self.spawn_timer = 0.0  # next tile needs its own 1s pause
+            self._stop_charge(keep_emitter=True)  # the second tile keeps emitting from the first
+            return
+
+        frames = CHARGE_ANIMS[self.charge_variant]  # frame from timer progress
+        s = self.charge_sprite
+        s.texture = frames[int(self.spawn_timer / SPAWN_DELAY * len(frames))]
+        s.position = (col * TILE_SIZE + TILE_SIZE / 2, row * TILE_SIZE + TILE_SIZE / 2)
+        s.visible = True
 
     def _player_columns(self):
         p = self.player
@@ -237,13 +302,17 @@ class GameView(arcade.Window):
         self.move_vertically()
         self.player_list.update_animation(delta_time)
         self.maybe_spawn_tiles(delta_time)
+        self.particles.update(delta_time)
         self.update_camera()
 
     def on_draw(self):
         self.clear()
         self.camera.use()
         self.grid_renderer.draw()
+        self.charge_list.draw(filter=GL_NEAREST)
+        self.particles.draw(self.camera)
         self.player_list.draw(filter=GL_NEAREST)
+
 
 
 def main():

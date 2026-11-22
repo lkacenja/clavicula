@@ -4,8 +4,7 @@ from clavicula.data.grid import TileType, TypedGrid
 GLYPH_TO_TILE: dict[str, TileType] = {
     ".": TileType.EMPTY,
     "#": TileType.IMMUTABLE,  # solid wall, never changes
-    "=": TileType.MUTABLE_PERMANENT,  # player-creatable, stays
-    "~": TileType.MUTABLE_DECAY,  # player-creatable, decays
+    "=": TileType.MUTABLE,  # player-creatable, stays
 }
 
 

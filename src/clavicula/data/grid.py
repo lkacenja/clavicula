@@ -14,8 +14,7 @@ T = TypeVar("T")
 
 class TileType(Enum):
     EMPTY = auto()
-    MUTABLE_PERMANENT = auto()
-    MUTABLE_DECAY = auto()
+    MUTABLE = auto()
     IMMUTABLE = auto()
 
 

@@ -40,6 +40,7 @@ class PlayerSprite(arcade.Sprite):
         self.vel_y = 0.0
         self.on_ground = False
 
+
     def update_animation(self, delta_time: float = 1 / 60):
         if self.change_x > 0:
             self.facing_right = True

@@ -1,34 +1,36 @@
 import math
+import random
 from typing import Dict, Tuple
 
 import arcade
+from pyglet.gl import GL_NEAREST
 
 from clavicula.constants import (
     WINDOW_HEIGHT,
     WINDOW_WIDTH,
     TILE_SIZE,
     TILESET_PATH,
-    TILESET_COLUMNS,
+    SHEET_COLS,
+    FIRST_ANIM_CELL,
+    ANIM_FRAMES,
+    ANIM_COUNT,
 )
 from clavicula.data.grid import TypedGrid, TileType, MutationEvent
 
-TILE_INDEX: Dict[TileType, int] = {
-    TileType.EMPTY: 0,
-    TileType.MUTABLE_PERMANENT: 1,
-    TileType.MUTABLE_DECAY: 2,
-    TileType.IMMUTABLE: 4,
-}
+TILE_INDEX = {TileType.IMMUTABLE: 0}      # EMPTY is never drawn
 
 _sheet = arcade.SpriteSheet(TILESET_PATH)
-_tile_textures = _sheet.get_texture_grid(
-    size=(TILE_SIZE, TILE_SIZE),
-    columns=TILESET_COLUMNS,
-    count=max(TILE_INDEX.values()) + 1,
-)
 
-_TEXTURE_BY_TYPE: Dict[TileType, arcade.Texture] = {
-    tile_type: _tile_textures[index] for tile_type, index in TILE_INDEX.items()
-}
+_textures = _sheet.get_texture_grid(
+    size=(TILE_SIZE, TILE_SIZE), columns=SHEET_COLS, count=SHEET_COLS,
+)
+_STATIC_TEXTURES = {t: _textures[i] for t, i in TILE_INDEX.items()}
+
+CHARGE_ANIMS = [
+    _textures[FIRST_ANIM_CELL + ANIM_FRAMES * k : FIRST_ANIM_CELL + ANIM_FRAMES * (k + 1)]
+    for k in range(ANIM_COUNT)
+]
+MUTABLE_TEXTURES = [anim[-1] for anim in CHARGE_ANIMS]
 
 
 class GridRenderer:
@@ -40,6 +42,7 @@ class GridRenderer:
         )
         self.sprite_list = arcade.SpriteList()
         self._sprites: Dict[Tuple[int, int], arcade.Sprite] = {}
+        self.variants: Dict[Tuple[int, int], int] = {}
 
         for r in range(self.rows):
             for c in range(self.cols):
@@ -52,15 +55,28 @@ class GridRenderer:
 
         self.grid.subscribe(self._on_mutation)
 
-    def _apply_type(self, sprite: arcade.Sprite, tile_type: TileType) -> None:
+    def _apply_type(self, sprite, tile_type, variant=0):
         if tile_type is TileType.EMPTY:
             sprite.visible = False
             return
-        sprite.texture = _TEXTURE_BY_TYPE[tile_type]
+        if tile_type is TileType.MUTABLE:
+            sprite.texture = MUTABLE_TEXTURES[variant]
+        else:
+            sprite.texture = _STATIC_TEXTURES[tile_type]
         sprite.visible = True
 
-    def _on_mutation(self, event: MutationEvent[TileType]) -> None:
-        self._apply_type(self._sprites[(event.row, event.col)], event.new)
+    def _on_mutation(self, event):
+        key = (event.row, event.col)
+        if event.new is TileType.MUTABLE:
+            # Loader-placed tiles arrive with no variant yet; give them a random one.
+            self.variants.setdefault(key, random.randrange(len(MUTABLE_TEXTURES)))
+        else:
+            self.variants.pop(key, None)  # removal still clears it
+        self._apply_type(self._sprites[key], event.new, self.variants[key] if key in self.variants else 0)
+
+    def set_mutable(self, row, col, variant):
+        self.variants[(row, col)] = variant  # set first so _on_mutation sees it
+        self.grid[row, col] = TileType.MUTABLE
 
     def draw(self) -> None:
-        self.sprite_list.draw()
+        self.sprite_list.draw(filter=GL_NEAREST)
